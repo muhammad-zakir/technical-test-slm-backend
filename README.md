@@ -143,18 +143,6 @@ Test coverage targets the non-trivial business logic only:
 
 Controllers, DTOs, and pure Prisma wrappers are intentionally not unit tested — they have no logic to assert beyond what the framework and ORM already guarantee.
 
-## Docker
-
-```bash
-# Start Postgres + backend (creates the shared Docker network)
-docker compose up -d
-
-# View logs
-docker compose logs -f backend
-```
-
-The backend `docker-compose.yml` defines the `mini-erp-network` bridge network. The frontend compose file joins it as `external: true`, allowing the frontend container to reach the backend by service name (`http://backend:3000`).
-
 ## Deployment (Vercel)
 
 `vercel.json` configures all routes to the NestJS serverless handler. `main.ts` exports a Vercel-compatible default function and also runs a standard `bootstrap()` for local development.
