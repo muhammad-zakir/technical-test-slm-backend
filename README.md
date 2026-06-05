@@ -1,98 +1,200 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Mini ERP — Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+NestJS REST API for a mini ERP invoicing system. Serverless-first (Vercel + Neon), built with a **Modular Monolith** architecture designed for future microservice extraction.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Tech Stack
 
-## Description
+| Layer | Technology |
+|---|---|
+| Runtime | Node.js 22, NestJS 11 |
+| Database | PostgreSQL 18 (Neon — serverless) |
+| ORM | Prisma 6 |
+| Auth | JWT (passport-jwt), bcrypt |
+| Validation | class-validator, class-transformer |
+| Testing | Jest + ts-jest |
+| Deployment | Vercel (serverless functions) |
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Architecture
 
-## Project setup
+### Modular Monolith
 
-```bash
-$ npm install
+Each domain is a self-contained NestJS module. No module reaches into another module's internals — communication happens only through injected services. This makes each domain trivially extractable into a standalone microservice:
+
+```
+src/
+  auth/          → future: Auth Service (NATS/TCP consumer)
+  customers/     → future: Customer Service
+  invoices/      → future: Invoice Service
+  dashboard/     → future: Aggregation/Reporting Service
+  prisma/        → @Global() shared DB client
+  common/        → shared types, decorators (transport-agnostic)
 ```
 
-## Compile and run the project
+### Service Layer Separation
+
+Controllers handle HTTP only — routing, extracting validated inputs, returning responses. All business logic lives in the service layer. Swapping HTTP transport for a message broker (NATS, RabbitMQ) requires zero changes to the service layer.
+
+The `@CurrentUser()` custom param decorator extracts the authenticated user in a transport-agnostic way, replacing the HTTP-only `@Request()` pattern.
+
+### Security
+
+- JWT tokens signed with `JWT_SECRET` via `ConfigService.getOrThrow` — the app **throws at startup** if the secret is missing; no insecure fallback
+- Passwords hashed with bcrypt (saltRounds=10)
+- Global `JwtAuthGuard` as `APP_GUARD` — all routes are protected by default; public routes opt out with `@Public()`
+- Role self-assignment disabled — `register` always assigns `UserRole.USER`; role changes require a privileged endpoint
+
+### Database Design Decisions
+
+- `InvoiceItem.total` is **not stored** — computed at the service layer as `quantity * unitPrice` to prevent stale derived data
+- Revenue aggregation uses a single `$queryRaw` SQL query with `GROUP BY status` instead of loading all invoice records into application memory
+- Invoice numbers (`INV-YYYYMMDD-NNNN`) are generated inside a Prisma transaction. In a high-concurrency production system, a PostgreSQL sequence would eliminate the theoretical race condition; a DB-level unique constraint on `invoiceNumber` is already in place as a safety net
+
+## API Reference
+
+All routes are prefixed with `/api`.
+
+### Auth
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/auth/register` | Public | Create user account |
+| POST | `/api/auth/login` | Public | Login, returns JWT |
+| GET | `/api/auth/me` | JWT | Current user profile |
+
+### Customers
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/customers` | JWT | List with search + pagination |
+| POST | `/api/customers` | JWT | Create customer |
+| PATCH | `/api/customers/:id` | JWT | Update customer |
+| DELETE | `/api/customers/:id` | JWT | Delete customer |
+
+Query params for GET: `search` (filters name OR email), `page` (default: 1), `limit` (default: 20, max: 100).
+
+### Invoices
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/invoices` | JWT | List with filter + pagination |
+| POST | `/api/invoices` | JWT | Create invoice with line items |
+| GET | `/api/invoices/:id` | JWT | Full invoice detail |
+| PATCH | `/api/invoices/:id/status` | JWT | Update status |
+
+Query params for GET: `status` (DRAFT/SENT/PAID/OVERDUE), `customerId`, `page`, `limit`.
+
+Invoice creation is **transactional** — the invoice and all line items are created atomically, or nothing is created.
+
+### Dashboard
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/dashboard/summary` | JWT | Revenue, pending, counts, recent invoices |
+
+### Health
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/health` | Public | API and DB connectivity check |
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 22+
+- A PostgreSQL database (Neon recommended, or local via Docker Compose)
+
+### Local Development
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+git clone git@github.com:muhammad-zakir/technical-test-slm-backend.git
+cd technical-test-slm-backend
+npm install
+cp .env.example .env
+# Fill in DATABASE_URL and JWT_SECRET in .env
+npx prisma migrate deploy
+npm run start:dev
 ```
 
-## Run tests
+API available at `http://localhost:3000/api`.
+
+### Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `JWT_SECRET` | Yes | Secret for signing JWT tokens (min 32 chars recommended) |
+| `FRONTEND_URL` | Yes | Frontend origin for CORS (e.g. `http://localhost:3001`) |
+| `PORT` | No | Server port (default: 3000) |
+| `NODE_ENV` | No | `production` enables Vercel serverless handler |
+
+## Testing
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm test           # run all unit tests
+npm run test:cov   # with coverage report
 ```
 
-## Deployment
+Test coverage targets the non-trivial business logic only:
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+- `AuthService` — password hashing, conflict detection, credential validation, role enforcement
+- `InvoicesService` — sequential invoice number generation, transaction item creation, not-found handling
+- `DashboardService` — revenue aggregation isolation (PAID vs SENT/OVERDUE), zero-state handling
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Controllers, DTOs, and pure Prisma wrappers are intentionally not unit tested — they have no logic to assert beyond what the framework and ORM already guarantee.
+
+## Docker
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+# Start Postgres + backend (creates the shared Docker network)
+docker compose up -d
+
+# View logs
+docker compose logs -f backend
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+The backend `docker-compose.yml` defines the `mini-erp-network` bridge network. The frontend compose file joins it as `external: true`, allowing the frontend container to reach the backend by service name (`http://backend:3000`).
 
-## Resources
+## Deployment (Vercel)
 
-Check out a few resources that may come in handy when working with NestJS:
+`vercel.json` configures all routes to the NestJS serverless handler. `main.ts` exports a Vercel-compatible default function and also runs a standard `bootstrap()` for local development.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```bash
+vercel deploy --prod
+```
 
-## Support
+Set all required environment variables in the Vercel dashboard before deploying.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## Project Structure
 
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+```
+src/
+  auth/
+    dto/                           validated input shapes
+    auth.controller.ts
+    auth.service.ts                business logic
+    jwt.strategy.ts                Passport JWT strategy
+    jwt-auth.guard.ts              global guard with @Public() opt-out
+    public.decorator.ts
+  common/
+    decorators/
+      current-user.decorator.ts   transport-agnostic user extraction
+    types/
+      authenticated-request.interface.ts
+  customers/
+    dto/
+    customers.controller.ts
+    customers.service.ts
+  invoices/
+    dto/
+    invoices.controller.ts
+    invoices.service.ts
+  dashboard/
+    dashboard.controller.ts
+    dashboard.service.ts
+  prisma/
+    prisma.module.ts               @Global() module
+    prisma.service.ts              PrismaClient wrapper
+  main.ts                          local bootstrap + Vercel handler
+  app.module.ts                    root module, wires all features + APP_GUARD
+```
