@@ -13,7 +13,10 @@ import { DashboardModule } from './dashboard/dashboard.module.js';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      ignoreEnvFile: process.env.NODE_ENV === 'production',
+    }),
     PrismaModule,
     AuthModule,
     CustomersModule,
